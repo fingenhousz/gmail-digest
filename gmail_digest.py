@@ -1,137 +1,98 @@
 """
 Gmail Newsletter Digest → WhatsApp via CallMeBot
-Fetches newsletters from the last 24h, summarizes with Claude, sends to WhatsApp.
+Fetches newsletters from the last 24h via IMAP, summarizes with Claude, sends to WhatsApp.
 """
 
 import os
-import base64
-import json
+import imaplib
+import email
+import re
 import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta, timezone
-from email import message_from_bytes
+from email.header import decode_header
 
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
 import anthropic
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-
+GMAIL_USER = os.environ["GMAIL_USER"]
+GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 CALLMEBOT_PHONE = os.environ["CALLMEBOT_PHONE"]
 CALLMEBOT_APIKEY = os.environ["CALLMEBOT_APIKEY"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GMAIL_LABEL = os.environ.get("GMAIL_LABEL", "Newsletters")
 
 
-def get_gmail_service():
-    creds = None
-
-    # GitHub Actions: credentials from env vars
-    if os.environ.get("GMAIL_TOKEN"):
-        token_data = json.loads(os.environ["GMAIL_TOKEN"])
-        creds_data = json.loads(os.environ["GMAIL_CREDENTIALS"])
-
-        with open("/tmp/credentials.json", "w") as f:
-            json.dump(creds_data, f)
-
-        creds = Credentials(
-            token=token_data["token"],
-            refresh_token=token_data["refresh_token"],
-            token_uri=token_data["token_uri"],
-            client_id=token_data["client_id"],
-            client_secret=token_data["client_secret"],
-            scopes=token_data["scopes"],
-        )
-
-    # Local dev: use token.json file
-    elif os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    elif not creds:
-        flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
-        creds = flow.run_local_server(port=0)
-        with open("token.json", "w") as f:
-            f.write(creds.to_json())
-
-    return build("gmail", "v1", credentials=creds)
+def decode_str(s):
+    parts = decode_header(s)
+    result = []
+    for part, enc in parts:
+        if isinstance(part, bytes):
+            result.append(part.decode(enc or "utf-8", errors="ignore"))
+        else:
+            result.append(part)
+    return "".join(result)
 
 
-def get_email_body(payload):
-    """Extract plain text body from email payload."""
-    if payload.get("body", {}).get("data"):
-        return base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="ignore")
+def get_text_body(msg):
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            if ct == "text/plain":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    body = payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
+                    break
+        if not body:
+            for part in msg.walk():
+                if part.get_content_type() == "text/html":
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        raw = payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
+                        body = re.sub(r"<[^>]+>", " ", raw)
+                        break
+    else:
+        payload = msg.get_payload(decode=True)
+        if payload:
+            body = payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
+    return body
 
-    for part in payload.get("parts", []):
-        if part["mimeType"] == "text/plain":
-            data = part.get("body", {}).get("data", "")
-            if data:
-                return base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
 
-    # Fallback: try HTML parts
-    for part in payload.get("parts", []):
-        if part["mimeType"] == "text/html":
-            data = part.get("body", {}).get("data", "")
-            if data:
-                raw = base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
-                # Very basic HTML strip
-                import re
-                return re.sub(r"<[^>]+>", " ", raw)
+def fetch_newsletters():
+    mail = imaplib.IMAP4_SSL("imap.gmail.com")
+    mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
 
-    return ""
+    # Gmail labels appear as IMAP folders
+    mail.select(f'"{GMAIL_LABEL}"')
 
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%d-%b-%Y")
+    _, data = mail.search(None, f'(SINCE "{since}")')
 
-def fetch_newsletters(service):
-    """Fetch emails from the Newsletters label from the last 24h."""
-    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y/%m/%d")
-    query = f"after:{since}"
-
-    # Get label ID
-    labels_result = service.users().labels().list(userId="me").execute()
-    label_id = None
-    for label in labels_result.get("labels", []):
-        if label["name"].lower() == GMAIL_LABEL.lower():
-            label_id = label["id"]
-            break
-
-    if not label_id:
-        print(f"Label '{GMAIL_LABEL}' not found in Gmail.")
+    email_ids = data[0].split()
+    if not email_ids:
+        mail.logout()
         return []
 
-    results = service.users().messages().list(
-        userId="me", labelIds=[label_id], q=query, maxResults=20
-    ).execute()
-
-    messages = results.get("messages", [])
     emails = []
+    for eid in email_ids[-20:]:  # Max 20 emails
+        _, msg_data = mail.fetch(eid, "(RFC822)")
+        msg = email.message_from_bytes(msg_data[0][1])
 
-    for msg in messages:
-        msg_data = service.users().messages().get(
-            userId="me", id=msg["id"], format="full"
-        ).execute()
-
-        headers = {h["name"]: h["value"] for h in msg_data["payload"]["headers"]}
-        subject = headers.get("Subject", "(pas de sujet)")
-        sender = headers.get("From", "Inconnu")
-        body = get_email_body(msg_data["payload"])
+        subject = decode_str(msg.get("Subject", "(pas de sujet)"))
+        sender = decode_str(msg.get("From", "Inconnu"))
+        body = get_text_body(msg)
 
         emails.append({
             "subject": subject,
             "sender": sender,
-            "body": body[:4000],  # Cap at 4000 chars per email
+            "body": body[:4000],
         })
 
+    mail.logout()
     return emails
 
 
 def summarize_with_claude(emails):
-    """Summarize all newsletters into a WhatsApp-friendly digest."""
-    if not emails:
-        return None
-
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     emails_text = "\n\n---\n\n".join(
@@ -172,22 +133,18 @@ Format souhaité :
 
 
 def send_whatsapp(message):
-    """Send message via CallMeBot WhatsApp API."""
     encoded = urllib.parse.quote(message)
     url = (
         f"https://api.callmebot.com/whatsapp.php"
         f"?phone={CALLMEBOT_PHONE}&text={encoded}&apikey={CALLMEBOT_APIKEY}"
     )
     with urllib.request.urlopen(url, timeout=15) as response:
-        status = response.status
-        print(f"CallMeBot response: {status}")
-    return status
+        print(f"CallMeBot response: {response.status}")
 
 
 def main():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Fetching newsletters...")
-    service = get_gmail_service()
-    emails = fetch_newsletters(service)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Fetching newsletters via IMAP...")
+    emails = fetch_newsletters()
 
     if not emails:
         print("No newsletters in the last 24h — skipping WhatsApp message.")
@@ -195,10 +152,6 @@ def main():
 
     print(f"Found {len(emails)} newsletter(s). Summarizing with Claude...")
     digest = summarize_with_claude(emails)
-
-    if not digest:
-        print("Nothing to summarize.")
-        return
 
     print("Sending to WhatsApp...")
     print("---\n" + digest + "\n---")

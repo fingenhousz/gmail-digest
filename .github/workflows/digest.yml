@@ -26,8 +26,8 @@ jobs:
 
       - name: Run digest
         env:
-          GMAIL_CREDENTIALS: ${{ secrets.GMAIL_CREDENTIALS }}
-          GMAIL_TOKEN: ${{ secrets.GMAIL_TOKEN }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
