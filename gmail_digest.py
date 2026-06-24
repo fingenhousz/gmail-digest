@@ -7,6 +7,7 @@ import os
 import imaplib
 import email
 import re
+import time
 import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -62,7 +63,6 @@ def fetch_newsletters():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
 
-    # Gmail labels appear as IMAP folders
     mail.select(f'"{GMAIL_LABEL}"')
 
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%d-%b-%Y")
@@ -74,7 +74,7 @@ def fetch_newsletters():
         return []
 
     emails = []
-    for eid in email_ids[-20:]:  # Max 20 emails
+    for eid in email_ids[-20:]:
         _, msg_data = mail.fetch(eid, "(RFC822)")
         msg = email.message_from_bytes(msg_data[0][1])
 
@@ -106,33 +106,37 @@ Voici {len(emails)} newsletter(s) reçues au cours des dernières 24h :
 
 {emails_text}
 
-Crée un digest WhatsApp en français avec :
-- Un titre court avec la date d'aujourd'hui
-- Pour chaque newsletter : 1 bullet point ultra-court (max 60 caractères) avec l'info la plus importante
-- Emoji pertinents pour la lisibilité mobile
-- Couvre TOUTES les newsletters sans exception
-- MAXIMUM 600 caractères au total (contrainte absolue)
-- Garde tous les accents et caractères spéciaux français (é, è, à, ç, etc.)
-- Utilise des apostrophes droites (') et non les apostrophes typographiques
+Crée un digest en français. Pour CHAQUE newsletter, génère un bloc séparé avec :
+- Le nom de la newsletter avec un emoji pertinent en titre (format : *[Emoji] [Nom]*)
+- 2-3 bullet points avec les informations les plus importantes
+- Des phrases courtes et percutantes
+
+Sépare chaque newsletter par une ligne contenant uniquement "---SPLIT---".
+
+Garde tous les accents français (é, è, à, ç, etc.).
+Utilise des apostrophes droites (') et non typographiques.
 
 Format :
-📰 *Digest du [date]*
+*[Emoji] [Nom newsletter]*
+• Point clé 1
+• Point clé 2
+• Point clé 3
+
+---SPLIT---
 
 *[Emoji] [Nom newsletter]*
-• Point clé
-
-*[Emoji] [Nom newsletter]*
-• Point clé
+• Point clé 1
+• Point clé 2
 """
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=400,
+        max_tokens=1500,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    # Normalize typographic apostrophes to straight ones for WhatsApp compatibility
     text = message.content[0].text
+    # Normalize typographic apostrophes
     text = text.replace("’", "'").replace("‘", "'")
     return text
 
@@ -143,9 +147,8 @@ def send_whatsapp(message):
         f"https://api.callmebot.com/whatsapp.php"
         f"?phone={CALLMEBOT_PHONE}&text={encoded}&apikey={CALLMEBOT_APIKEY}"
     )
-    print(f"Digest length: {len(message)} chars / URL length: {len(url)} chars")
     with urllib.request.urlopen(url, timeout=15) as response:
-        print(f"CallMeBot response: {response.status}")
+        print(f"  CallMeBot: {response.status} ({len(message)} chars)")
 
 
 def main():
@@ -153,16 +156,26 @@ def main():
     emails = fetch_newsletters()
 
     if not emails:
-        print("No newsletters in the last 24h — skipping WhatsApp message.")
+        print("No newsletters in the last 24h — skipping.")
         return
 
     print(f"Found {len(emails)} newsletter(s). Summarizing with Claude...")
     digest = summarize_with_claude(emails)
 
-    print("Sending to WhatsApp...")
-    print("---\n" + digest + "\n---")
-    send_whatsapp(digest)
-    print("Done.")
+    blocks = [b.strip() for b in digest.split("---SPLIT---") if b.strip()]
+    print(f"Sending {len(blocks)} messages to WhatsApp...")
+
+    # Header message
+    date_str = datetime.now().strftime("%d %B %Y")
+    header = f"📰 *Digest du {date_str}* — {len(blocks)} newsletters"
+    send_whatsapp(header)
+
+    for i, block in enumerate(blocks):
+        time.sleep(3)
+        print(f"\n[{i+1}/{len(blocks)}] {block[:60]}...")
+        send_whatsapp(block)
+
+    print("\nDone.")
 
 
 if __name__ == "__main__":
