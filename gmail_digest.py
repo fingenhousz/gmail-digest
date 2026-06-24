@@ -14,12 +14,12 @@ from email.header import decode_header
 
 import anthropic
 
-GMAIL_USER = os.environ["GMAIL_USER"]
-GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
-CALLMEBOT_PHONE = os.environ["CALLMEBOT_PHONE"]
-CALLMEBOT_APIKEY = os.environ["CALLMEBOT_APIKEY"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-GMAIL_LABEL = os.environ.get("GMAIL_LABEL", "Newsletters")
+GMAIL_USER = os.environ["GMAIL_USER"].strip()
+GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"].strip()
+CALLMEBOT_PHONE = os.environ["CALLMEBOT_PHONE"].strip()
+CALLMEBOT_APIKEY = os.environ["CALLMEBOT_APIKEY"].strip()
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"].strip()
+GMAIL_LABEL = os.environ.get("GMAIL_LABEL", "Newsletters").strip()
 
 
 def decode_str(s):
