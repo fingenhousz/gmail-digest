@@ -110,7 +110,7 @@ Crée un digest WhatsApp en français avec :
 - Un titre court avec la date d'aujourd'hui
 - Pour chaque newsletter : 2-3 bullet points des infos les plus importantes
 - Emoji pertinents pour la lisibilité mobile
-- Maximum 1500 caractères au total
+- Couvre TOUTES les newsletters reçues sans exception
 
 Format souhaité :
 📰 *Digest du [date]*
@@ -125,7 +125,7 @@ Format souhaité :
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=600,
+        max_tokens=1500,
         messages=[{"role": "user", "content": prompt}],
     )
 
