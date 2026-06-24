@@ -100,34 +100,34 @@ def summarize_with_claude(emails):
         for e in emails
     )
 
-    prompt = f"""Tu es un assistant qui cree des digests de newsletters concis et utiles.
+    prompt = f"""Tu es un assistant qui crée des digests de newsletters concis et utiles.
 
-Voici {len(emails)} newsletter(s) recues au cours des dernieres 24h :
+Voici {len(emails)} newsletter(s) reçues au cours des dernières 24h :
 
 {emails_text}
 
-Cree un digest WhatsApp en francais avec :
+Crée un digest WhatsApp en français avec :
 - Un titre court avec la date d'aujourd'hui
-- Pour chaque newsletter : 1-2 bullet points courts (max 80 caracteres chacun) des infos les plus importantes
-- Emoji pertinents pour la lisibilite mobile
-- Couvre TOUTES les newsletters recues sans exception
-- Maximum 1500 caracteres au total (crucial : le message sera coupe sinon)
-- Utilise uniquement des apostrophes droites (') et non typographiques
+- Pour chaque newsletter : 1 bullet point ultra-court (max 60 caractères) avec l'info la plus importante
+- Emoji pertinents pour la lisibilité mobile
+- Couvre TOUTES les newsletters sans exception
+- MAXIMUM 600 caractères au total (contrainte absolue)
+- Garde tous les accents et caractères spéciaux français (é, è, à, ç, etc.)
+- Utilise des apostrophes droites (') et non les apostrophes typographiques
 
-Format souhaite :
+Format :
 📰 *Digest du [date]*
 
 *[Emoji] [Nom newsletter]*
-• Point cle 1
-• Point cle 2
+• Point clé
 
 *[Emoji] [Nom newsletter]*
-• ...
+• Point clé
 """
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=1500,
+        max_tokens=400,
         messages=[{"role": "user", "content": prompt}],
     )
 
@@ -143,6 +143,7 @@ def send_whatsapp(message):
         f"https://api.callmebot.com/whatsapp.php"
         f"?phone={CALLMEBOT_PHONE}&text={encoded}&apikey={CALLMEBOT_APIKEY}"
     )
+    print(f"Digest length: {len(message)} chars / URL length: {len(url)} chars")
     with urllib.request.urlopen(url, timeout=15) as response:
         print(f"CallMeBot response: {response.status}")
 
@@ -158,7 +159,6 @@ def main():
     print(f"Found {len(emails)} newsletter(s). Summarizing with Claude...")
     digest = summarize_with_claude(emails)
 
-    print(f"Digest length: {len(digest)} chars")
     print("Sending to WhatsApp...")
     print("---\n" + digest + "\n---")
     send_whatsapp(digest)
