@@ -2,8 +2,8 @@ name: Gmail Newsletter Digest
 
 on:
   schedule:
-    # Every day at 6:00 UTC = 7:00 AM Paris in winter (CET), 8:00 AM in summer (CEST)
-    - cron: "0 6 * * *"
+    # 5:00 UTC = 7:00 AM Paris en été (CEST), 6:00 AM en hiver (CET)
+    - cron: "0 5 * * *"
   workflow_dispatch:
 
 jobs:
