@@ -100,26 +100,28 @@ def summarize_with_claude(emails):
         for e in emails
     )
 
-    prompt = f"""Tu es un assistant qui crée des digests de newsletters concis et utiles.
+    prompt = f"""Tu es un assistant qui cree des digests de newsletters concis et utiles.
 
-Voici {len(emails)} newsletter(s) reçue(s) au cours des dernières 24h :
+Voici {len(emails)} newsletter(s) recues au cours des dernieres 24h :
 
 {emails_text}
 
-Crée un digest WhatsApp en français avec :
+Cree un digest WhatsApp en francais avec :
 - Un titre court avec la date d'aujourd'hui
-- Pour chaque newsletter : 2-3 bullet points des infos les plus importantes
-- Emoji pertinents pour la lisibilité mobile
-- Couvre TOUTES les newsletters reçues sans exception
+- Pour chaque newsletter : 1-2 bullet points courts (max 80 caracteres chacun) des infos les plus importantes
+- Emoji pertinents pour la lisibilite mobile
+- Couvre TOUTES les newsletters recues sans exception
+- Maximum 1500 caracteres au total (crucial : le message sera coupe sinon)
+- Utilise uniquement des apostrophes droites (') et non typographiques
 
-Format souhaité :
+Format souhaite :
 📰 *Digest du [date]*
 
-*[Nom newsletter]*
-• Point clé 1
-• Point clé 2
+*[Emoji] [Nom newsletter]*
+• Point cle 1
+• Point cle 2
 
-*[Nom newsletter]*
+*[Emoji] [Nom newsletter]*
 • ...
 """
 
@@ -129,7 +131,10 @@ Format souhaité :
         messages=[{"role": "user", "content": prompt}],
     )
 
-    return message.content[0].text
+    # Normalize typographic apostrophes to straight ones for WhatsApp compatibility
+    text = message.content[0].text
+    text = text.replace("’", "'").replace("‘", "'")
+    return text
 
 
 def send_whatsapp(message):
@@ -153,6 +158,7 @@ def main():
     print(f"Found {len(emails)} newsletter(s). Summarizing with Claude...")
     digest = summarize_with_claude(emails)
 
+    print(f"Digest length: {len(digest)} chars")
     print("Sending to WhatsApp...")
     print("---\n" + digest + "\n---")
     send_whatsapp(digest)
