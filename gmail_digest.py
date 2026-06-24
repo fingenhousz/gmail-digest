@@ -10,6 +10,7 @@ import re
 import time
 import urllib.request
 import urllib.parse
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 
@@ -37,11 +38,9 @@ def decode_str(s):
 
 def html_to_text(html):
     soup = BeautifulSoup(html, "html.parser")
-    # Remove noise: scripts, styles, nav, footer, header
     for tag in soup(["script", "style", "nav", "footer", "header", "img", "a"]):
         tag.decompose()
     text = soup.get_text(separator="\n")
-    # Collapse blank lines
     lines = [l.strip() for l in text.splitlines()]
     lines = [l for l in lines if l]
     return "\n".join(lines)
@@ -76,7 +75,6 @@ def get_text_body(msg):
 def fetch_newsletters():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-
     mail.select(f'"{GMAIL_LABEL}"')
 
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%d-%b-%Y")
@@ -91,16 +89,10 @@ def fetch_newsletters():
     for eid in email_ids[-20:]:
         _, msg_data = mail.fetch(eid, "(RFC822)")
         msg = email.message_from_bytes(msg_data[0][1])
-
         subject = decode_str(msg.get("Subject", "(pas de sujet)"))
         sender = decode_str(msg.get("From", "Inconnu"))
         body = get_text_body(msg)
-
-        emails.append({
-            "subject": subject,
-            "sender": sender,
-            "body": body[:8000],
-        })
+        emails.append({"subject": subject, "sender": sender, "body": body[:8000]})
 
     mail.logout()
     return emails
@@ -151,7 +143,7 @@ Format :
     )
 
     text = message.content[0].text
-    text = text.replace("'", "'").replace("'", "'")
+    text = text.replace("’", "'").replace("‘", "'")
     return text
 
 
@@ -161,8 +153,11 @@ def send_whatsapp(message):
         f"https://api.callmebot.com/whatsapp.php"
         f"?phone={CALLMEBOT_PHONE}&text={encoded}&apikey={CALLMEBOT_APIKEY}"
     )
-    with urllib.request.urlopen(url, timeout=15) as response:
-        print(f"  CallMeBot: {response.status} ({len(message)} chars)")
+    try:
+        with urllib.request.urlopen(url, timeout=15) as response:
+            print(f"  CallMeBot: {response.status} ({len(message)} chars)")
+    except urllib.error.HTTPError as e:
+        print(f"  CallMeBot error: {e.code} — skipping this message")
 
 
 def main():
@@ -184,7 +179,7 @@ def main():
     send_whatsapp(header)
 
     for i, block in enumerate(blocks):
-        time.sleep(3)
+        time.sleep(10)
         print(f"\n[{i+1}/{len(blocks)}] {block[:60]}...")
         send_whatsapp(block)
 
