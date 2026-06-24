@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 
 import anthropic
+from bs4 import BeautifulSoup
 
 GMAIL_USER = os.environ["GMAIL_USER"].strip()
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"].strip()
@@ -34,12 +35,23 @@ def decode_str(s):
     return "".join(result)
 
 
+def html_to_text(html):
+    soup = BeautifulSoup(html, "html.parser")
+    # Remove noise: scripts, styles, nav, footer, header
+    for tag in soup(["script", "style", "nav", "footer", "header", "img", "a"]):
+        tag.decompose()
+    text = soup.get_text(separator="\n")
+    # Collapse blank lines
+    lines = [l.strip() for l in text.splitlines()]
+    lines = [l for l in lines if l]
+    return "\n".join(lines)
+
+
 def get_text_body(msg):
     body = ""
     if msg.is_multipart():
         for part in msg.walk():
-            ct = part.get_content_type()
-            if ct == "text/plain":
+            if part.get_content_type() == "text/plain":
                 payload = part.get_payload(decode=True)
                 if payload:
                     body = payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
@@ -50,12 +62,14 @@ def get_text_body(msg):
                     payload = part.get_payload(decode=True)
                     if payload:
                         raw = payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
-                        body = re.sub(r"<[^>]+>", " ", raw)
+                        body = html_to_text(raw)
                         break
     else:
         payload = msg.get_payload(decode=True)
         if payload:
-            body = payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
+            ct = msg.get_content_type()
+            raw = payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
+            body = html_to_text(raw) if ct == "text/html" else raw
     return body
 
 
@@ -85,7 +99,7 @@ def fetch_newsletters():
         emails.append({
             "subject": subject,
             "sender": sender,
-            "body": body[:4000],
+            "body": body[:8000],
         })
 
     mail.logout()
@@ -108,7 +122,8 @@ Voici {len(emails)} newsletter(s) reçues au cours des dernières 24h :
 
 Crée un digest en français. Pour CHAQUE newsletter, génère un bloc séparé avec :
 - Le nom de la newsletter avec un emoji pertinent en titre (format : *[Emoji] [Nom]*)
-- 2-3 bullet points avec les informations les plus importantes
+- 2-3 bullet points précis et insightful avec les informations les plus importantes
+- Des faits concrets, chiffres, noms — pas de généralités vagues
 - Des phrases courtes et percutantes
 
 Sépare chaque newsletter par une ligne contenant uniquement "---SPLIT---".
@@ -136,8 +151,7 @@ Format :
     )
 
     text = message.content[0].text
-    # Normalize typographic apostrophes
-    text = text.replace("’", "'").replace("‘", "'")
+    text = text.replace("'", "'").replace("'", "'")
     return text
 
 
@@ -165,7 +179,6 @@ def main():
     blocks = [b.strip() for b in digest.split("---SPLIT---") if b.strip()]
     print(f"Sending {len(blocks)} messages to WhatsApp...")
 
-    # Header message
     date_str = datetime.now().strftime("%d %B %Y")
     header = f"📰 *Digest du {date_str}* — {len(blocks)} newsletters"
     send_whatsapp(header)
