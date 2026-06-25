@@ -1,17 +1,16 @@
 """
 Gmail Newsletter Digest → WhatsApp via CallMeBot
-Fetches newsletters from the last 24h via IMAP, summarizes with Claude, sends to WhatsApp.
+Fetches unread newsletters via IMAP, summarizes with Claude, sends to WhatsApp.
 """
 
 import os
 import imaplib
 import email
-import re
 import time
 import urllib.request
 import urllib.parse
 import urllib.error
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from email.header import decode_header
 
 import anthropic
@@ -77,8 +76,7 @@ def fetch_newsletters():
     mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
     mail.select(f'"{GMAIL_LABEL}"')
 
-    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%d-%b-%Y")
-    _, data = mail.search(None, f'(SINCE "{since}")')
+    _, data = mail.search(None, "UNSEEN")
 
     email_ids = data[0].split()
     if not email_ids:
@@ -93,6 +91,7 @@ def fetch_newsletters():
         sender = decode_str(msg.get("From", "Inconnu"))
         body = get_text_body(msg)
         emails.append({"subject": subject, "sender": sender, "body": body[:8000]})
+        mail.store(eid, "+FLAGS", "\\Seen")
 
     mail.logout()
     return emails
@@ -108,7 +107,7 @@ def summarize_with_claude(emails):
 
     prompt = f"""Tu es un assistant qui crée des digests de newsletters concis et utiles.
 
-Voici {len(emails)} newsletter(s) reçues au cours des dernières 24h :
+Voici {len(emails)} newsletter(s) non lues :
 
 {emails_text}
 
@@ -165,7 +164,7 @@ def main():
     emails = fetch_newsletters()
 
     if not emails:
-        print("No newsletters in the last 24h — skipping.")
+        print("No unread newsletters — skipping.")
         return
 
     print(f"Found {len(emails)} newsletter(s). Summarizing with Claude...")

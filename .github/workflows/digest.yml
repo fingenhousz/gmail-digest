@@ -1,9 +1,7 @@
 name: Gmail Newsletter Digest
 
 on:
-  schedule:
-    # 5:00 UTC = 7:00 AM Paris en été (CEST), 6:00 AM en hiver (CET)
-    - cron: "0 5 * * *"
+  # Déclenché par cron-job.org via API — plus fiable que le cron GitHub natif
   workflow_dispatch:
 
 jobs:
