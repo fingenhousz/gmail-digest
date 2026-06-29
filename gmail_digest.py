@@ -4,6 +4,7 @@ Fetches unread newsletters via IMAP, summarizes with Claude, sends to WhatsApp.
 """
 
 import os
+import re
 import imaplib
 import email
 import time
@@ -22,6 +23,12 @@ CALLMEBOT_PHONE = os.environ["CALLMEBOT_PHONE"].strip()
 CALLMEBOT_APIKEY = os.environ["CALLMEBOT_APIKEY"].strip()
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"].strip()
 GMAIL_LABEL = os.environ.get("GMAIL_LABEL", "Newsletters").strip()
+
+APOSTROPHE_RE = re.compile(r"[‘’‚‛ʼʻ′‵]")
+
+
+def normalize_apostrophes(text):
+    return APOSTROPHE_RE.sub("'", text)
 
 
 def decode_str(s):
@@ -91,7 +98,7 @@ def fetch_newsletters():
         sender = decode_str(msg.get("From", "Inconnu"))
         body = get_text_body(msg)
         emails.append({"subject": subject, "sender": sender, "body": body[:8000]})
-        mail.store(eid, "+FLAGS", "\\Seen")
+        mail.store(eid, "+FLAGS", "\Seen")
 
     mail.logout()
     return emails
@@ -112,27 +119,25 @@ Voici {len(emails)} newsletter(s) non lues :
 {emails_text}
 
 Crée un digest en français. Pour CHAQUE newsletter, génère un bloc séparé avec :
-- Le nom de la newsletter avec un emoji pertinent en titre (format : *[Emoji] [Nom]*)
-- 2-3 bullet points précis et insightful avec les informations les plus importantes
-- Des faits concrets, chiffres, noms — pas de généralités vagues
-- Des phrases courtes et percutantes
+- Le nom de la newsletter avec un emoji pertinent en titre (format : *[Emoji] [Nom newsletter]*)
+- 2-3 bullet points précis avec les informations les plus importantes
+
+RÈGLES ABSOLUES pour les bullet points :
+- Chaque bullet doit être compréhensible SANS avoir lu la newsletter et SANS contexte extérieur
+- Si tu mentionnes une personne, une entreprise ou un outil, introduis-le brièvement la première fois (ex: "Sam Altman, CEO d'OpenAI, annonce..." ou "Notion, l'outil de productivité, lance...")
+- Jamais de "elle", "il", "ils" sans avoir établi le sujet dans le même bullet
+- Des faits concrets : chiffres, noms complets, événements — pas de généralités vagues
+- Phrases courtes et percutantes
 
 Sépare chaque newsletter par une ligne contenant uniquement "---SPLIT---".
-
-Garde tous les accents français (é, è, à, ç, etc.).
-Utilise des apostrophes droites (') et non typographiques.
+Garde tous les accents français. Utilise des apostrophes droites (') uniquement.
 
 Format :
 *[Emoji] [Nom newsletter]*
-• Point clé 1
-• Point clé 2
-• Point clé 3
+• [Sujet introduit] fait/annonce/lance [information concrète]
+• [Autre info concrète et autonome]
 
 ---SPLIT---
-
-*[Emoji] [Nom newsletter]*
-• Point clé 1
-• Point clé 2
 """
 
     message = client.messages.create(
@@ -142,8 +147,7 @@ Format :
     )
 
     text = message.content[0].text
-    text = text.replace("’", "'").replace("‘", "'")
-    return text
+    return normalize_apostrophes(text)
 
 
 def send_whatsapp(message):
