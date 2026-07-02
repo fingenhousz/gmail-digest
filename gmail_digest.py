@@ -1,5 +1,5 @@
 """
-Gmail Newsletter Digest → WhatsApp via CallMeBot
+Gmail Newsletter Digest -> WhatsApp via CallMeBot
 Fetches unread newsletters via IMAP, summarizes with Claude, sends to WhatsApp.
 """
 
@@ -24,7 +24,7 @@ CALLMEBOT_APIKEY = os.environ["CALLMEBOT_APIKEY"].strip()
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"].strip()
 GMAIL_LABEL = os.environ.get("GMAIL_LABEL", "Newsletters").strip()
 
-APOSTROPHE_RE = re.compile(r"[‘’‚‛ʼʻ′‵]")
+APOSTROPHE_RE = re.compile("[‘’‚‛ʼʻ′‵]")
 
 
 def normalize_apostrophes(text):
@@ -78,27 +78,40 @@ def get_text_body(msg):
     return body
 
 
+def sender_key(sender):
+    """Normalize sender address to deduplicate (e.g. multiple Free Press emails)."""
+    match = re.search(r"<(.+?)>", sender)
+    addr = match.group(1) if match else sender
+    return addr.lower().strip()
+
+
 def fetch_newsletters():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
     mail.select(f'"{GMAIL_LABEL}"')
 
     _, data = mail.search(None, "UNSEEN")
-
     email_ids = data[0].split()
     if not email_ids:
         mail.logout()
         return []
 
     emails = []
-    for eid in email_ids[-20:]:
+    seen_senders = set()
+    for eid in reversed(email_ids[-20:]):  # most recent first
         _, msg_data = mail.fetch(eid, "(RFC822)")
         msg = email.message_from_bytes(msg_data[0][1])
         subject = decode_str(msg.get("Subject", "(pas de sujet)"))
         sender = decode_str(msg.get("From", "Inconnu"))
+        key = sender_key(sender)
+        if key in seen_senders:
+            mail.store(eid, "+FLAGS", "\\Seen")
+            print(f"  Skipping duplicate from {sender}")
+            continue
+        seen_senders.add(key)
         body = get_text_body(msg)
         emails.append({"subject": subject, "sender": sender, "body": body[:8000]})
-        mail.store(eid, "+FLAGS", "\Seen")
+        mail.store(eid, "+FLAGS", "\\Seen")
 
     mail.logout()
     return emails
@@ -112,32 +125,27 @@ def summarize_with_claude(emails):
         for e in emails
     )
 
-    prompt = f"""Tu es un assistant qui crée des digests de newsletters concis et utiles.
+    prompt = f"""Tu es un assistant qui cree des digests de newsletters percutants et analytiques.
 
 Voici {len(emails)} newsletter(s) non lues :
 
 {emails_text}
 
-Crée un digest en français. Pour CHAQUE newsletter, génère un bloc séparé avec :
-- Le nom de la newsletter avec un emoji pertinent en titre (format : *[Emoji] [Nom newsletter]*)
-- 2-3 bullet points précis avec les informations les plus importantes
+Cree un digest en francais. Pour CHAQUE newsletter, genere un bloc avec :
+- Titre : *[Emoji] [Nom newsletter]* (emoji pertinent au contenu du jour)
+- 2-3 bullet points
 
-RÈGLES ABSOLUES pour les bullet points :
-- Chaque bullet doit être compréhensible SANS avoir lu la newsletter et SANS contexte extérieur
-- Si tu mentionnes une personne, une entreprise ou un outil, introduis-le brièvement la première fois (ex: "Sam Altman, CEO d'OpenAI, annonce..." ou "Notion, l'outil de productivité, lance...")
-- Jamais de "elle", "il", "ils" sans avoir établi le sujet dans le même bullet
-- Des faits concrets : chiffres, noms complets, événements — pas de généralités vagues
-- Phrases courtes et percutantes
+REGLES pour chaque bullet point :
+1. Commence par le SO WHAT : l'implication concrete, ce que ca change, pourquoi ca compte
+2. Appuie avec les faits et chiffres concrets qui le justifient
+3. Le bullet doit etre autonome : si tu mentionnes une personne ou entreprise, introduis-la brievement la premiere fois (ex: "Sam Altman, CEO d'OpenAI, ...")
+4. Jamais de "il", "elle", "ils" sans antecedent dans le meme bullet
+5. Phrases courtes. Apostrophes droites uniquement (').
 
-Sépare chaque newsletter par une ligne contenant uniquement "---SPLIT---".
-Garde tous les accents français. Utilise des apostrophes droites (') uniquement.
+Bon exemple : "L'IA accelere le remplacement des cols blancs : McKinsey estime 12M de postes automatisables d'ici 2030 aux US, concentres sur la compta et le droit."
+Mauvais exemple : "Elle a lance un nouveau produit qui pourrait changer les choses."
 
-Format :
-*[Emoji] [Nom newsletter]*
-• [Sujet introduit] fait/annonce/lance [information concrète]
-• [Autre info concrète et autonome]
-
----SPLIT---
+Separe chaque newsletter par une ligne contenant uniquement "---SPLIT---".
 """
 
     message = client.messages.create(
@@ -178,7 +186,7 @@ def main():
     print(f"Sending {len(blocks)} messages to WhatsApp...")
 
     date_str = datetime.now().strftime("%d %B %Y")
-    header = f"📰 *Digest du {date_str}* — {len(blocks)} newsletters"
+    header = f"\U0001f4f0 *Digest du {date_str}* — {len(blocks)} newsletters"
     send_whatsapp(header)
 
     for i, block in enumerate(blocks):
