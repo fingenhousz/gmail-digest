@@ -230,8 +230,9 @@ def main():
 
     for i, block in enumerate(blocks):
         time.sleep(10)
+        tagged_block = f"\U0001f4f0 {block}"
         print(f"\n[{i+1}/{len(blocks)}] {block[:60]}...")
-        if not send_whatsapp(block):
+        if not send_whatsapp(tagged_block):
             failures += 1
 
     if failures:
