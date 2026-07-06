@@ -12,11 +12,14 @@ import time
 import urllib.request
 import urllib.parse
 import urllib.error
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from email.header import decode_header
+from email.utils import parsedate_to_datetime
 
 import anthropic
 from bs4 import BeautifulSoup
+
+MAX_NEWSLETTER_AGE = timedelta(hours=36)
 
 GMAIL_USER = os.environ["GMAIL_USER"].strip()
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"].strip()
@@ -104,6 +107,21 @@ def fetch_newsletters():
         msg = email.message_from_bytes(msg_data[0][1])
         subject = decode_str(msg.get("Subject", "(pas de sujet)"))
         sender = decode_str(msg.get("From", "Inconnu"))
+
+        date_header = msg.get("Date")
+        if date_header:
+            try:
+                sent_at = parsedate_to_datetime(date_header)
+                if sent_at.tzinfo is None:
+                    sent_at = sent_at.replace(tzinfo=timezone.utc)
+                age = datetime.now(timezone.utc) - sent_at
+                if age > MAX_NEWSLETTER_AGE:
+                    mail.store(eid, "+FLAGS", "\\Seen")
+                    print(f"  Skipping stale email from {sender} (sent {age} ago)")
+                    continue
+            except (TypeError, ValueError):
+                pass  # unparseable date — don't drop the email over it
+
         key = sender_key(sender)
         if key in seen_senders:
             mail.store(eid, "+FLAGS", "\\Seen")
@@ -139,9 +157,10 @@ Cree un digest en francais. Pour CHAQUE newsletter, genere un bloc avec :
 REGLES pour chaque bullet point :
 1. Commence par le SO WHAT : l'implication concrete, ce que ca change, pourquoi ca compte
 2. Appuie avec les faits et chiffres concrets qui le justifient
-3. Le bullet doit etre autonome : si tu mentionnes une personne ou entreprise, introduis-la brievement la premiere fois (ex: "Sam Altman, CEO d'OpenAI, ...")
-4. Jamais de "il", "elle", "ils" sans antecedent dans le meme bullet
-5. Phrases courtes. Apostrophes droites uniquement (').
+3. Le bullet doit etre 100% autoporteur : un lecteur qui n'a vu aucun autre message doit tout comprendre. Introduis toute personne/entreprise/produit la premiere fois qu'il apparait (ex: "Sam Altman, CEO d'OpenAI, ..."), meme si ca semble evident ou deja connu
+4. Jamais de "il", "elle", "ils", "ce produit", "cette annonce" sans antecedent explicite dans le meme bullet
+5. Phrases courtes. Apostrophes droites uniquement (')
+6. Ignore les actualites que la newsletter recycle ou rappelle (retrospectives, "cette semaine on a parle de...", references a des annonces anterieures) : ne retiens que ce qui est presente comme une information nouvelle du jour
 
 Bon exemple : "L'IA accelere le remplacement des cols blancs : McKinsey estime 12M de postes automatisables d'ici 2030 aux US, concentres sur la compta et le droit."
 Mauvais exemple : "Elle a lance un nouveau produit qui pourrait changer les choses."
