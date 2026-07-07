@@ -102,7 +102,10 @@ def fetch_newsletters():
 
     emails = []
     seen_senders = set()
-    for eid in reversed(email_ids[-20:]):  # most recent first
+    # Cap is generous: stale emails are marked \Seen and skipped before ever
+    # reaching Claude, so a large backlog (e.g. after the age filter was
+    # added) drains in one run instead of 20-at-a-time across many triggers.
+    for eid in reversed(email_ids[-500:]):  # most recent first
         _, msg_data = mail.fetch(eid, "(RFC822)")
         msg = email.message_from_bytes(msg_data[0][1])
         subject = decode_str(msg.get("Subject", "(pas de sujet)"))
