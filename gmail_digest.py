@@ -96,6 +96,7 @@ def fetch_newsletters():
 
     _, data = mail.search(None, "UNSEEN")
     email_ids = data[0].split()
+    print(f"  {len(email_ids)} unread email(s) in label \"{GMAIL_LABEL}\" total")
     if not email_ids:
         mail.logout()
         return []
