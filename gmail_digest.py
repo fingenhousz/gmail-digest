@@ -39,6 +39,16 @@ NEWSLETTER_SENDERS = [
     "exponentialview", "jonathanhaidt", "gadallon", "nouveaudepart",
     "nicolascolin", "philippecorbe", "lenny", "linguasinica",
     "mariedolle", "bariweiss", "lewrapup", "therundown", "Benedict Evans",
+    # Added 2026-07-08 from the auto-suggestion scan. no-reply@substack.com,
+    # reaction@mg1.substack.com, and on+product@substack.com looked like
+    # generic Substack platform notifications rather than one publication's
+    # own newsletter (seen recurring across many different newsletters
+    # during the backlog cleanup) — remove them here if they turn out noisy.
+    "alexispoulin", "bensbites", "foudelatech", "iaethiqueinsider",
+    "no-reply@substack.com", "on+product@substack.com", "peterfrankopan",
+    "post+the-weekender", "reaction@mg1.substack.com", "statsignificant",
+    "stephenfollows", "theconvivialsociety", "themicrodose+5-questions",
+    "vcunfiltered", "wufeimusic",
 ]
 
 APOSTROPHE_RE = re.compile("[‘’‚‛ʼʻ′‵]")
