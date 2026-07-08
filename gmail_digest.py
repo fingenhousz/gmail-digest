@@ -120,12 +120,24 @@ def save_suggested_senders(senders):
         json.dump(sorted(senders), f, ensure_ascii=False, indent=2)
 
 
+# Domains used by individual-newsletter platforms — deliberately narrower
+# than "has a List-Unsubscribe header", which matches almost any marketing
+# or transactional email and floods the suggestion with noise (confirmed:
+# an earlier version using that alone produced a Telegram message so long
+# it exceeded the 4096-char API limit). This targets "same type as what's
+# already tracked" — most current NEWSLETTER_SENDERS are on Substack.
+NEWSLETTER_PLATFORM_DOMAINS = (
+    "substack.com", "beehiiv.com", "ghost.io", "convertkit.com", "buttondown.email",
+)
+
+MAX_SUGGESTED_CANDIDATES = 15
+
+
 def scan_for_new_newsletter_candidates():
     """Suggestion-only detection: never auto-adds a sender to NEWSLETTER_SENDERS.
-    Flags recent inbox mail carrying a List-Unsubscribe header (the standard
-    signal for legitimate bulk/newsletter mail) from a sender not already
-    tracked, so Florian can decide whether to add it. Each sender is
-    suggested at most once (tracked in suggested_senders.json)."""
+    Flags recent inbox mail from a known newsletter-platform domain whose
+    sender isn't already tracked, so Florian can decide whether to add it.
+    Each sender is suggested at most once (tracked in suggested_senders.json)."""
     already_suggested = load_suggested_senders()
 
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
@@ -138,16 +150,16 @@ def scan_for_new_newsletter_candidates():
 
     candidates = {}
     for eid in ids[-300:]:
-        _, msg_data = mail.fetch(eid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT LIST-UNSUBSCRIBE)])")
+        _, msg_data = mail.fetch(eid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])")
         header_bytes = msg_data[0][1] if msg_data and msg_data[0] else b""
         if not header_bytes:
             continue
         msg = email.message_from_bytes(header_bytes)
-        if not msg.get("List-Unsubscribe"):
-            continue
         sender = decode_str(msg.get("From", ""))
         key = sender_key(sender)
         if not key or key in already_suggested:
+            continue
+        if not any(domain in key for domain in NEWSLETTER_PLATFORM_DOMAINS):
             continue
         if any(s.lower() in key for s in NEWSLETTER_SENDERS):
             continue  # already tracked
@@ -314,14 +326,20 @@ def send_new_newsletter_suggestion():
         return
     if not candidates:
         return
-    lines = "\n".join(f'- {sender} (sujet recent : "{subject}")' for sender, subject in candidates.values())
+    items = list(candidates.items())
+    shown, rest = items[:MAX_SUGGESTED_CANDIDATES], items[MAX_SUGGESTED_CANDIDATES:]
+    lines = "\n".join(f'- {sender} (sujet recent : "{subject}")' for _, (sender, subject) in shown)
+    if rest:
+        lines += f"\n... et {len(rest)} autre(s) (relance le scan apres avoir traite ceux-ci)"
     suggestion = (
         "\U0001f50d *Nouvelle(s) newsletter(s) potentielle(s) detectee(s)*, "
         "pas encore suivie(s) :\n" + lines +
         "\n\nDis-le a Claude si tu veux que je les ajoute au suivi."
     )
     if send_telegram(suggestion):
-        save_suggested_senders(already_suggested | set(candidates.keys()))
+        # Only mark the shown candidates as suggested — the truncated "rest"
+        # should resurface on the next run instead of being silently dropped.
+        save_suggested_senders(already_suggested | {key for key, _ in shown})
 
 
 def main():
