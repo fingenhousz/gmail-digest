@@ -26,7 +26,19 @@ GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"].strip()
 CALLMEBOT_PHONE = os.environ["CALLMEBOT_PHONE"].strip()
 CALLMEBOT_APIKEY = os.environ["CALLMEBOT_APIKEY"].strip()
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"].strip()
-GMAIL_LABEL = os.environ.get("GMAIL_LABEL", "Newsletters").strip()
+
+# Fetch by sender directly against INBOX instead of relying on a Gmail label
+# applied by a user-side filter. The "Newsletters" label filter silently
+# stopped matching anything (broken from:(from:x OR from:y ...) syntax /
+# possible sender-address drift on Substack's side) and stayed broken for
+# weeks with zero visible error — this removes that single point of failure.
+# Update this list if a newsletter's sending address changes or a new one is
+# added; it doesn't require touching any Gmail setting.
+NEWSLETTER_SENDERS = [
+    "exponentialview", "jonathanhaidt", "gadallon", "nouveaudepart",
+    "nicolascolin", "philippecorbe", "lenny", "linguasinica",
+    "mariedolle", "bariweiss", "lewrapup", "therundown", "Benedict Evans",
+]
 
 APOSTROPHE_RE = re.compile("[‘’‚‛ʼʻ′‵]")
 
@@ -89,14 +101,28 @@ def sender_key(sender):
     return addr.lower().strip()
 
 
+def build_from_or_query(senders):
+    """Build a nested IMAP '(OR FROM "a" (OR FROM "b" FROM "c"))' expression."""
+    terms = [f'FROM "{s}"' for s in senders]
+    query = terms[-1]
+    for t in reversed(terms[:-1]):
+        query = f'(OR {t} {query})'
+    return query
+
+
 def fetch_newsletters():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-    mail.select(f'"{GMAIL_LABEL}"')
+    mail.select("INBOX")
 
-    _, data = mail.search(None, "UNSEEN")
+    # IMAP SINCE is day-granularity only — this is a coarse pre-filter to
+    # keep the fetch small; the precise 36h cutoff is enforced per-message
+    # below via the actual Date header.
+    since = (datetime.now(timezone.utc) - timedelta(days=4)).strftime("%d-%b-%Y")
+    query = f'(SINCE {since}) (UNSEEN) {build_from_or_query(NEWSLETTER_SENDERS)}'
+    _, data = mail.search(None, query)
     email_ids = data[0].split()
-    print(f"  {len(email_ids)} unread email(s) in label \"{GMAIL_LABEL}\" total")
+    print(f"  {len(email_ids)} unread newsletter email(s) matched in INBOX")
     if not email_ids:
         mail.logout()
         return []
