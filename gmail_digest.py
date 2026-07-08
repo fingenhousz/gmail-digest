@@ -6,6 +6,7 @@ Fetches unread newsletters via IMAP, summarizes with Claude, sends to WhatsApp.
 import os
 import re
 import sys
+import json
 import imaplib
 import email
 import time
@@ -101,6 +102,61 @@ def sender_key(sender):
     return addr.lower().strip()
 
 
+SUGGESTED_SENDERS_FILE = "suggested_senders.json"
+
+
+def load_suggested_senders():
+    if not os.path.exists(SUGGESTED_SENDERS_FILE):
+        return set()
+    try:
+        with open(SUGGESTED_SENDERS_FILE, encoding="utf-8") as f:
+            return set(json.load(f))
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+
+def save_suggested_senders(senders):
+    with open(SUGGESTED_SENDERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(senders), f, ensure_ascii=False, indent=2)
+
+
+def scan_for_new_newsletter_candidates():
+    """Suggestion-only detection: never auto-adds a sender to NEWSLETTER_SENDERS.
+    Flags recent inbox mail carrying a List-Unsubscribe header (the standard
+    signal for legitimate bulk/newsletter mail) from a sender not already
+    tracked, so Florian can decide whether to add it. Each sender is
+    suggested at most once (tracked in suggested_senders.json)."""
+    already_suggested = load_suggested_senders()
+
+    mail = imaplib.IMAP4_SSL("imap.gmail.com")
+    mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+    mail.select("INBOX")
+
+    since = (datetime.now(timezone.utc) - timedelta(days=4)).strftime("%d-%b-%Y")
+    _, data = mail.search(None, f"(SINCE {since})")
+    ids = data[0].split()
+
+    candidates = {}
+    for eid in ids[-300:]:
+        _, msg_data = mail.fetch(eid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT LIST-UNSUBSCRIBE)])")
+        header_bytes = msg_data[0][1] if msg_data and msg_data[0] else b""
+        if not header_bytes:
+            continue
+        msg = email.message_from_bytes(header_bytes)
+        if not msg.get("List-Unsubscribe"):
+            continue
+        sender = decode_str(msg.get("From", ""))
+        key = sender_key(sender)
+        if not key or key in already_suggested:
+            continue
+        if any(s.lower() in key for s in NEWSLETTER_SENDERS):
+            continue  # already tracked
+        candidates[key] = (sender, decode_str(msg.get("Subject", "(pas de sujet)")))
+
+    mail.logout()
+    return candidates, already_suggested
+
+
 def build_from_or_query(senders):
     """Build a nested IMAP '(OR FROM "a" (OR FROM "b" FROM "c"))' expression."""
     terms = [f'FROM "{s}"' for s in senders]
@@ -139,6 +195,7 @@ def fetch_newsletters():
         sender = decode_str(msg.get("From", "Inconnu"))
 
         date_header = msg.get("Date")
+        sent_at = None
         if date_header:
             try:
                 sent_at = parsedate_to_datetime(date_header)
@@ -150,7 +207,7 @@ def fetch_newsletters():
                     print(f"  Skipping stale email from {sender} (sent {age} ago)")
                     continue
             except (TypeError, ValueError):
-                pass  # unparseable date — don't drop the email over it
+                sent_at = None  # unparseable date — don't drop the email over it
 
         key = sender_key(sender)
         if key in seen_senders:
@@ -159,7 +216,8 @@ def fetch_newsletters():
             continue
         seen_senders.add(key)
         body = get_text_body(msg)
-        emails.append({"subject": subject, "sender": sender, "body": body[:8000]})
+        date_str = sent_at.strftime("%d/%m/%Y") if sent_at else "date inconnue"
+        emails.append({"subject": subject, "sender": sender, "body": body[:8000], "date": date_str})
         mail.store(eid, "+FLAGS", "\\Seen")
 
     mail.logout()
@@ -170,7 +228,7 @@ def summarize_with_claude(emails):
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     emails_text = "\n\n---\n\n".join(
-        f"De: {e['sender']}\nSujet: {e['subject']}\n\n{e['body']}"
+        f"De: {e['sender']}\nDate d'envoi: {e['date']}\nSujet: {e['subject']}\n\n{e['body']}"
         for e in emails
     )
 
@@ -181,7 +239,7 @@ Voici {len(emails)} newsletter(s) non lues :
 {emails_text}
 
 Cree un digest en francais. Pour CHAQUE newsletter, genere un bloc avec :
-- Titre : *[Emoji] [Nom newsletter]* (emoji pertinent au contenu du jour)
+- Titre : *[Emoji] [Nom newsletter] ([Date d'envoi])* (emoji pertinent au contenu du jour, date d'envoi au format JJ/MM/AAAA fournie ci-dessus)
 - 2-3 bullet points
 
 REGLES pour chaque bullet point :
@@ -191,8 +249,9 @@ REGLES pour chaque bullet point :
 4. Jamais de "il", "elle", "ils", "ce produit", "cette annonce" sans antecedent explicite dans le meme bullet
 5. Phrases courtes. Apostrophes droites uniquement (')
 6. Ignore les actualites que la newsletter recycle ou rappelle (retrospectives, "cette semaine on a parle de...", references a des annonces anterieures) : ne retiens que ce qui est presente comme une information nouvelle du jour
+7. Si le bullet s'appuie sur une etude, un rapport ou une enquete cite dans la newsletter (ex: "une etude de McKinsey montre..."), precise sa date de publication entre parentheses juste apres l'avoir mentionnee (ex: "une etude de McKinsey (mars 2026) montre..."). Si la date de l'etude n'est pas indiquee dans le texte source, ne l'invente pas — omets simplement la parenthese.
 
-Bon exemple : "L'IA accelere le remplacement des cols blancs : McKinsey estime 12M de postes automatisables d'ici 2030 aux US, concentres sur la compta et le droit."
+Bon exemple : "L'IA accelere le remplacement des cols blancs : une etude McKinsey (janvier 2026) estime 12M de postes automatisables d'ici 2030 aux US, concentres sur la compta et le droit."
 Mauvais exemple : "Elle a lance un nouveau produit qui pourrait changer les choses."
 
 Separe chaque newsletter par une ligne contenant uniquement "---SPLIT---".
@@ -259,9 +318,33 @@ def send_whatsapp(message):
     return ok
 
 
+def send_new_newsletter_suggestion():
+    """Suggestion-only: scan for candidate newsletters and, if any are new,
+    send one notification listing them. Never modifies NEWSLETTER_SENDERS —
+    Florian decides whether to add them."""
+    try:
+        candidates, already_suggested = scan_for_new_newsletter_candidates()
+    except Exception as e:
+        print(f"  Newsletter-candidate scan failed (non-fatal): {e}")
+        return
+    if not candidates:
+        return
+    lines = "\n".join(f'- {sender} (sujet recent : "{subject}")' for sender, subject in candidates.values())
+    suggestion = (
+        "\U0001f50d *Nouvelle(s) newsletter(s) potentielle(s) detectee(s)*, "
+        "pas encore suivie(s) :\n" + lines +
+        "\n\nDis-le a Claude si tu veux que je les ajoute au suivi."
+    )
+    if send_whatsapp(suggestion):
+        save_suggested_senders(already_suggested | set(candidates.keys()))
+
+
 def main():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Fetching newsletters via IMAP...")
     emails = fetch_newsletters()
+
+    print("Scanning for new newsletter candidates (suggestion only)...")
+    send_new_newsletter_suggestion()
 
     if not emails:
         print("No unread newsletters — skipping.")
