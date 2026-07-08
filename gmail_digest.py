@@ -279,9 +279,16 @@ Separe chaque newsletter par une ligne contenant uniquement "---SPLIT---".
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=1500,
+        max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
+
+    if message.stop_reason == "max_tokens":
+        print(
+            "  WARNING: Claude's digest response was cut off at the max_tokens "
+            "limit — the last newsletter block is likely truncated. Consider "
+            "raising max_tokens further if this recurs."
+        )
 
     text = message.content[0].text
     return normalize_apostrophes(text)
