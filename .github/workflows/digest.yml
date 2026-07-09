@@ -61,18 +61,21 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python gmail_digest.py
 
-      # Persist which candidate newsletters have already been suggested, and
-      # the rolling weekly log used for the Sunday recap — GitHub Actions
-      # runners are ephemeral, so without this every run starts from blank.
+      # Persist which candidate newsletters have already been suggested, the
+      # rolling weekly log used for the Sunday recap, and the pending
+      # "En dis plus" expansions — GitHub Actions runners are ephemeral, so
+      # without this every run starts from blank state.
       - name: Commit updated state files
         if: always() && steps.dedup.outputs.skip != 'true'
         run: |
-          if [ -n "$(git status --porcelain suggested_senders.json weekly_log.json)" ]; then
+          FILES="suggested_senders.json weekly_log.json pending_expansions.json"
+          if [ -n "$(git status --porcelain $FILES)" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add suggested_senders.json weekly_log.json
-            git commit -m "chore: update newsletter-suggestion and weekly-log history [skip ci]"
+            git add $FILES
+            git commit -m "chore: update digest state files [skip ci]"
+            git pull --rebase
             git push
           else
-            echo "No change to suggested_senders.json or weekly_log.json"
+            echo "No change to state files"
           fi

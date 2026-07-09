@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import json
+import hashlib
 import imaplib
 import email
 import time
@@ -160,6 +161,41 @@ def append_to_weekly_log(digest_text):
     entries = load_weekly_log()
     entries.append({"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "digest": digest_text})
     save_weekly_log(entries)
+
+
+PENDING_EXPANSIONS_FILE = "pending_expansions.json"
+PENDING_EXPANSIONS_WINDOW_DAYS = 7
+
+
+def load_pending_expansions():
+    if not os.path.exists(PENDING_EXPANSIONS_FILE):
+        return {}
+    try:
+        with open(PENDING_EXPANSIONS_FILE, encoding="utf-8") as f:
+            entries = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=PENDING_EXPANSIONS_WINDOW_DAYS)
+    kept = {}
+    for key, e in entries.items():
+        try:
+            if datetime.fromisoformat(e["logged_at"]) >= cutoff:
+                kept[key] = e
+        except (KeyError, ValueError):
+            continue
+    return kept
+
+
+def save_pending_expansions(entries):
+    with open(PENDING_EXPANSIONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+
+
+def expansion_id(sender, subject, date_str):
+    """Short, stable id for a newsletter — used as Telegram callback_data,
+    which is capped at 64 bytes, so the full subject/sender can't be used."""
+    raw = f"{sender}|{subject}|{date_str}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def send_weekly_recap():
@@ -366,18 +402,21 @@ Separe chaque newsletter par une ligne contenant uniquement "---SPLIT---".
     return normalize_apostrophes(text)
 
 
-def send_telegram(message):
+def send_telegram(message, reply_markup=None):
     """Send a message via the Telegram bot.
 
     Telegram's API gives a proper JSON {"ok": bool, ...} response with a
     real HTTP status — unlike CallMeBot, no HTML-body-sniffing needed.
     """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({
+    payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "Markdown",
-    }).encode("utf-8")
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    data = urllib.parse.urlencode(payload).encode("utf-8")
     try:
         with urllib.request.urlopen(url, data=data, timeout=30) as response:
             status = response.status
@@ -445,18 +484,41 @@ def main():
         append_to_weekly_log(digest)
 
         blocks = [b.strip() for b in digest.split("---SPLIT---") if b.strip()]
+        # The optional synthesis block has no matching email — everything
+        # else follows the same order as `emails` was given to Claude in.
+        synthesis_blocks = [b for b in blocks if "Convergence du jour" in b]
+        newsletter_blocks = [b for b in blocks if "Convergence du jour" not in b]
         print(f"Sending {len(blocks)} messages to Telegram...")
 
         date_str = datetime.now().strftime("%d %B %Y")
         header = f"\U0001f4f0 *Digest du {date_str}* — {len(blocks)} newsletters"
         failures = 0 if send_telegram(header) else 1
 
-        for i, block in enumerate(blocks):
+        for block in synthesis_blocks:
+            time.sleep(3)
+            if not send_telegram(f"\U0001f4f0 {block}"):
+                failures += 1
+
+        expansions = load_pending_expansions()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for i, block in enumerate(newsletter_blocks):
             time.sleep(3)
             tagged_block = f"\U0001f4f0 {block}"
-            print(f"\n[{i+1}/{len(blocks)}] {block[:60]}...")
-            if not send_telegram(tagged_block):
+            print(f"\n[{i+1}/{len(newsletter_blocks)}] {block[:60]}...")
+            reply_markup = None
+            if i < len(emails):
+                e = emails[i]
+                eid = expansion_id(e["sender"], e["subject"], e["date"])
+                expansions[eid] = {
+                    "sender": e["sender"], "subject": e["subject"],
+                    "date": e["date"], "body": e["body"], "logged_at": now_iso,
+                }
+                reply_markup = {"inline_keyboard": [[
+                    {"text": "\U0001f4d6 En dis plus", "callback_data": f"expand:{eid}"}
+                ]]}
+            if not send_telegram(tagged_block, reply_markup=reply_markup):
                 failures += 1
+        save_pending_expansions(expansions)
 
     # Sunday: send the weekly "best of" recap regardless of whether today
     # itself had fresh newsletters — it synthesizes the whole logged week.
