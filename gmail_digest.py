@@ -128,6 +128,73 @@ def save_suggested_senders(senders):
         json.dump(sorted(senders), f, ensure_ascii=False, indent=2)
 
 
+WEEKLY_LOG_FILE = "weekly_log.json"
+WEEKLY_LOG_WINDOW_DAYS = 7
+
+
+def load_weekly_log():
+    if not os.path.exists(WEEKLY_LOG_FILE):
+        return []
+    try:
+        with open(WEEKLY_LOG_FILE, encoding="utf-8") as f:
+            entries = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=WEEKLY_LOG_WINDOW_DAYS)
+    kept = []
+    for e in entries:
+        try:
+            if datetime.fromisoformat(e["date"]).replace(tzinfo=timezone.utc) >= cutoff:
+                kept.append(e)
+        except (KeyError, ValueError):
+            continue
+    return kept
+
+
+def save_weekly_log(entries):
+    with open(WEEKLY_LOG_FILE, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+
+
+def append_to_weekly_log(digest_text):
+    entries = load_weekly_log()
+    entries.append({"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "digest": digest_text})
+    save_weekly_log(entries)
+
+
+def send_weekly_recap():
+    """Sunday-only: synthesize the week's accumulated digests into a
+    'best of the week' recap, prioritized by impact/recurrence rather than
+    a chronological rehash."""
+    entries = load_weekly_log()
+    if len(entries) < 2:
+        print(f"  Only {len(entries)} day(s) logged this week — skipping recap.")
+        return
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    combined = "\n\n===JOUR===\n\n".join(f"Date: {e['date']}\n{e['digest']}" for e in entries)
+    prompt = f"""Voici les digests envoyes cette semaine (jusqu'a {WEEKLY_LOG_WINDOW_DAYS} derniers jours) :
+
+{combined}
+
+Cree un recap hebdomadaire en francais : les 3-5 informations les plus importantes de la semaine. Priorise par IMPACT et RECURRENCE (un sujet revenu plusieurs jours de suite compte plus qu'une actu isolee), pas par ordre chronologique. Format : bullets 100% autoporteurs (introduis toute entite au premier usage), apostrophes droites uniquement ('). Pas d'intro ni de conclusion — juste les bullets, un par ligne."""
+
+    message = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    if message.stop_reason == "max_tokens":
+        print("  WARNING: weekly recap was cut off at the max_tokens limit.")
+    text = normalize_apostrophes(message.content[0].text)
+
+    date_str = datetime.now().strftime("%d %B %Y")
+    header = f"\U0001f4c5 *Recap de la semaine du {date_str}*"
+    if send_telegram(header):
+        time.sleep(3)
+        send_telegram(text)
+
+
 # Domains used by individual-newsletter platforms — deliberately narrower
 # than "has a List-Unsubscribe header", which matches almost any marketing
 # or transactional email and floods the suggestion with noise (confirmed:
@@ -258,7 +325,12 @@ Voici {len(emails)} newsletter(s) non lues :
 
 {emails_text}
 
-Cree un digest en francais. Pour CHAQUE newsletter, genere un bloc avec :
+D'ABORD, avant les blocs par newsletter : cherche s'il existe une VRAIE convergence entre au moins 2 newsletters differentes de ce lot (meme sujet, meme tendance, signaux qui se recoupent ou se contredisent). Si oui, genere UN bloc de synthese :
+- Titre : *\U0001f517 Convergence du jour*
+- 1-2 bullets expliquant le pattern repere, en citant les newsletters concernees par leur nom
+Si aucune convergence reelle n'existe (les sujets sont juste differents, pas de recoupement), NE GENERE PAS ce bloc — ne force jamais une connexion artificielle.
+
+Puis, pour CHAQUE newsletter, genere un bloc avec :
 - Titre : *[Emoji] [Nom newsletter] ([Date d'envoi])* (emoji pertinent au contenu du jour, date d'envoi au format JJ/MM/AAAA fournie ci-dessus)
 - 2-3 bullet points
 
@@ -364,32 +436,39 @@ def main():
     print("Scanning for new newsletter candidates (suggestion only)...")
     send_new_newsletter_suggestion()
 
+    failures = 0
     if not emails:
-        print("No unread newsletters — skipping.")
-        return
+        print("No unread newsletters today.")
+    else:
+        print(f"Found {len(emails)} newsletter(s). Summarizing with Claude...")
+        digest = summarize_with_claude(emails)
+        append_to_weekly_log(digest)
 
-    print(f"Found {len(emails)} newsletter(s). Summarizing with Claude...")
-    digest = summarize_with_claude(emails)
+        blocks = [b.strip() for b in digest.split("---SPLIT---") if b.strip()]
+        print(f"Sending {len(blocks)} messages to Telegram...")
 
-    blocks = [b.strip() for b in digest.split("---SPLIT---") if b.strip()]
-    print(f"Sending {len(blocks)} messages to Telegram...")
+        date_str = datetime.now().strftime("%d %B %Y")
+        header = f"\U0001f4f0 *Digest du {date_str}* — {len(blocks)} newsletters"
+        failures = 0 if send_telegram(header) else 1
 
-    date_str = datetime.now().strftime("%d %B %Y")
-    header = f"\U0001f4f0 *Digest du {date_str}* — {len(blocks)} newsletters"
-    failures = 0 if send_telegram(header) else 1
+        for i, block in enumerate(blocks):
+            time.sleep(3)
+            tagged_block = f"\U0001f4f0 {block}"
+            print(f"\n[{i+1}/{len(blocks)}] {block[:60]}...")
+            if not send_telegram(tagged_block):
+                failures += 1
 
-    for i, block in enumerate(blocks):
-        time.sleep(3)
-        tagged_block = f"\U0001f4f0 {block}"
-        print(f"\n[{i+1}/{len(blocks)}] {block[:60]}...")
-        if not send_telegram(tagged_block):
-            failures += 1
+    # Sunday: send the weekly "best of" recap regardless of whether today
+    # itself had fresh newsletters — it synthesizes the whole logged week.
+    if datetime.now(timezone.utc).weekday() == 6:
+        print("\nDimanche — envoi du recap hebdomadaire...")
+        send_weekly_recap()
 
     if failures:
         print(
-            f"\nERROR: {failures}/{len(blocks) + 1} Telegram messages were NOT "
-            "delivered (see responses above). Common causes: invalid bot "
-            "token, wrong chat ID, or the bot was blocked."
+            f"\nERROR: {failures} Telegram message(s) were NOT delivered "
+            "(see responses above). Common causes: invalid bot token, "
+            "wrong chat ID, or the bot was blocked."
         )
         sys.exit(1)
 
