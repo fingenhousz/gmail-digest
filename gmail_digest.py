@@ -514,7 +514,7 @@ def main():
                     "date": e["date"], "body": e["body"], "logged_at": now_iso,
                 }
                 reply_markup = {"inline_keyboard": [[
-                    {"text": "\U0001f4d6 En dis plus", "callback_data": f"expand:{eid}"}
+                    {"text": "\U0001f4d6 Dis en plus", "callback_data": f"expand:{eid}"}
                 ]]}
             if not send_telegram(tagged_block, reply_markup=reply_markup):
                 failures += 1
