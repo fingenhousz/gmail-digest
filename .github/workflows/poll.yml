@@ -3,9 +3,11 @@ name: Poll Telegram buttons
 on:
   schedule:
     # Fallback only — primary trigger is cron-job.org calling workflow_dispatch
-    # hourly. Button clicks aren't time-critical, so hourly keeps both
-    # cron-job.org's free-tier execution count and GitHub Actions usage low.
-    - cron: '0 * * * *'
+    # every minute. "Dis en plus" responsiveness matters here, and this repo
+    # is public so there's no GitHub Actions minutes quota to worry about
+    # (unlike eti-digest's poll, which is throttled to hourly since it's
+    # less time-sensitive and this keeps cron-job.org's total load down).
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 permissions:
